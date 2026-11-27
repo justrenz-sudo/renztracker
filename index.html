@@ -47,6 +47,12 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--save);outl
 .tx button{border:0;background:none;color:var(--muted);font-size:20px;padding:4px 8px}
 .empty{color:var(--muted);text-align:center;padding:14px 0}
 .hint{font-size:13px;color:var(--muted);margin-top:8px}
+.btn.alt{background:var(--bg);color:var(--ink);border:1px solid var(--line)}
+.dm{display:grid;gap:10px;margin-bottom:6px}
+.dm .sub{font-size:13px;color:var(--muted);margin:2px 0 -4px}
+.row2{display:flex;gap:8px;flex-wrap:wrap}
+.row2 .btn{flex:1;min-width:120px}
+#dmMsg{min-height:20px}
 </style>
 </head>
 <body>
@@ -103,8 +109,23 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--save);outl
   <div id="list"></div>
 </section>
 
-<div class="hint" style="text-align:center">Data is saved on this device only.</div>
-<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:10px"><button class="btn small" id="cur">Currency</button><button class="btn small" id="theme">Theme</button><button class="btn small" id="reset">Clear all data</button></div>
+
+<section class="card">
+  <h2>Settings &amp; Data</h2>
+  <div class="dm">
+    <div class="sub">Backup</div>
+    <button class="btn alt" id="exJson">Export backup (.json)</button>
+    <button class="btn alt" id="imp">Import / Restore backup</button>
+    <input type="file" id="impFile" accept=".json,application/json" hidden>
+    <div class="sub">Report</div>
+    <button class="btn alt" id="exCsv">Export to Excel / CSV</button>
+    <div class="sub">Preferences</div>
+    <div class="row2"><button class="btn alt" id="cur">Currency</button><button class="btn alt" id="theme">Theme</button></div>
+    <div class="sub">Danger zone</div>
+    <button class="btn alt" id="reset" style="color:var(--spend)">Clear all data</button>
+  </div>
+  <div class="hint" id="dmMsg">Data is saved on this device only. Mag-export ng backup paminsan-minsan.</div>
+</section>
 </main>
 <script>
 const K="pocket-ledger-v1";
@@ -172,6 +193,52 @@ function rm(k,i){if(S[k].length<2)return;S[k].splice(i,1);save();edCats();cats()
 function addc(k){const v=$("new_"+k).value.trim();if(!v||dup(k,v,-1))return;S[k].push(v);save();edCats();cats()}
 $("edBtn").onclick=()=>{const c=$("edCard");c.hidden=!c.hidden;if(!c.hidden)edCats()};
 $("edDone").onclick=()=>{$("edCard").hidden=true};
+const msg=t=>{$("dmMsg").textContent=t};
+function dl(name,text,mime){
+  const u=URL.createObjectURL(new Blob([text],{type:mime})),a=document.createElement("a");
+  a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(u),5000);
+}
+$("exJson").onclick=()=>{
+  const n="money-tracker-backup-"+today()+".json";
+  dl(n,JSON.stringify({app:"RenzTracker",version:1,exportedAt:new Date().toISOString(),data:S},null,2),"application/json");
+  msg("Na-export: "+n+" ("+S.tx.length+" entries). Tingnan sa Downloads.");
+};
+$("exCsv").onclick=()=>{
+  if(!S.tx.length){msg("Walang transactions na i-export.");return}
+  const q=v=>{v=String(v);if(/^[=+\-@\t\r]/.test(v))v="'"+v;return '"'+v.replace(/"/g,'""')+'"'};
+  const rows=[["Date","Type","Category","Note","Amount"]].concat([...S.tx].sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(t=>[t.date,t.type==="in"?"Income":"Expense",t.cat,t.note,t.amt]));
+  const n="renztracker-transactions-"+today()+".csv";
+  dl(n,"\uFEFF"+rows.map(r=>r.map((v,i)=>i===4?v:q(v)).join(",")).join("\r\n"),"text/csv;charset=utf-8");
+  msg("Na-export: "+n+". Buksan sa Excel o Google Sheets.");
+};
+function clean(raw){
+  const d=raw&&raw.data&&typeof raw.data==="object"?raw.data:raw;
+  if(!d||typeof d!=="object"||!Array.isArray(d.tx))return null;
+  const dt=/^\d{4}-\d{2}-\d{2}$/,tx=[];
+  for(const t of d.tx){
+    const a=Number(t&&t.amt);
+    if(!t||(t.type!=="in"&&t.type!=="out")||!isFinite(a)||a<=0||typeof t.cat!=="string"||!t.cat.trim()||typeof t.date!=="string"||!dt.test(t.date))return null;
+    tx.push({id:Number(t.id)||Date.now()+tx.length,type:t.type,amt:a,cat:t.cat.trim().slice(0,60),note:typeof t.note==="string"?t.note.slice(0,200):"",date:t.date});
+  }
+  const cl=a=>Array.isArray(a)?[...new Set(a.filter(x=>typeof x==="string"&&x.trim()).map(x=>x.trim().slice(0,60)))]:[];
+  let o=cl(d.outCats),i=cl(d.inCats);
+  if(!o.length)o=DO.slice();if(!i.length)i=DI.slice();
+  tx.forEach(t=>{const L=t.type==="out"?o:i;if(!L.includes(t.cat))L.push(t.cat)});
+  const n=v=>Math.max(0,Number(v)||0);
+  return{tx,budget:n(d.budget),goal:n(d.goal),cur:typeof d.cur==="string"&&d.cur.trim()?d.cur.trim().slice(0,4):"$",outCats:o,inCats:i};
+}
+$("imp").onclick=()=>$("impFile").click();
+$("impFile").onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  let c=null;
+  try{if(f.size>5e6)throw 0;c=clean(JSON.parse(await f.text()))}catch(x){c=null}
+  e.target.value="";
+  if(!c){alert("Hindi valid ang file. Pumili ng .json backup na galing sa RenzTracker.");msg("Hindi na-import: maling file.");return}
+  if(!confirm("Sigurado ka bang gusto mong palitan ang kasalukuyang records?\n\nMay "+c.tx.length+" entries sa backup. Mapapalitan ang lahat ng kasalukuyang data."))return;
+  S=c;save();cats();render();
+  msg("Na-restore ang backup: "+c.tx.length+" entries.");
+};
 $("date").value=today();cats();render();
 if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{})}
 </script>
